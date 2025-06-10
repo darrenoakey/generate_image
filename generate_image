@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""
+Image generator using GPT-4o native image generation with command line interface.
+"""
+
+import argparse
+import keyring
+import openai
+import requests
+import base64
+from PIL import Image
+import os
+import re
+import sys
+from io import BytesIO
+
+
+def get_next_filename():
+    """Generate the next available filename in the format generated_image_{number}.png"""
+    pattern = r"generated_image_(\d+)\.(jpg|jpeg|png)"
+    max_num = 0
+
+    # Look for existing files in current directory
+    for filename in os.listdir("."):
+        match = re.match(pattern, filename, re.IGNORECASE)
+        if match:
+            num = int(match.group(1))
+            max_num = max(max_num, num)
+
+    return (
+        f"generated_image_{max_num + 1}.png"  # Default to PNG for transparency support
+    )
+
+
+def calculate_optimal_size(width=None, height=None):
+    """
+    Calculate optimal size for GPT-4o image generation.
+    GPT-4o supports: "1024x1024", "1024x1536", "1536x1024", or "auto"
+    """
+    if width is None and height is None:
+        return (1024, 1024)
+
+    # If only one dimension specified, make it square
+    if width is None:
+        width = height
+    elif height is None:
+        height = width
+
+    # Available gpt-image-1 sizes
+    available_sizes = [
+        (1024, 1024),  # Square
+        (1024, 1536),  # Portrait
+        (1536, 1024),  # Landscape
+    ]
+
+    target_ratio = width / height
+
+    # Find the closest aspect ratio from available sizes
+    best_size = (1024, 1024)
+    best_ratio_diff = float("inf")
+
+    for w, h in available_sizes:
+        ratio = w / h
+        ratio_diff = abs(ratio - target_ratio)
+        if ratio_diff < best_ratio_diff:
+            best_ratio_diff = ratio_diff
+            best_size = (w, h)
+
+    return best_size
+
+
+def enhance_prompt_for_aspect_ratio(prompt, width, height):
+    """Enhance the prompt to encourage the desired aspect ratio"""
+    if width is None or height is None:
+        return prompt
+
+    # Express as width:height ratio
+    aspect_ratio_text = f" with aspect ratio {width}:{height}"
+
+    return prompt + aspect_ratio_text
+
+
+def resize_and_crop_image(image, target_width, target_height):
+    """
+    Resize and crop image to exact target dimensions while maintaining aspect ratio.
+    """
+    original_width, original_height = image.size
+    target_ratio = target_width / target_height
+    original_ratio = original_width / original_height
+
+    # Calculate new size for aspect-ratio-preserving resize
+    if original_ratio > target_ratio:
+        # Image is wider than target, fit to height
+        new_height = target_height
+        new_width = int(original_width * (target_height / original_height))
+    else:
+        # Image is taller than target, fit to width
+        new_width = target_width
+        new_height = int(original_height * (target_width / original_width))
+
+    # Resize image
+    resized_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+    # Calculate crop box to center the crop
+    left = (new_width - target_width) // 2
+    top = (new_height - target_height) // 2
+    right = left + target_width
+    bottom = top + target_height
+
+    # Crop to exact target size
+    cropped_image = resized_image.crop((left, top, right, bottom))
+
+    return cropped_image
+
+
+def generate_image(prompt, filename=None, width=None, height=None):
+    """Generate an image using GPT-4o native image generation"""
+
+    # Get API key from keyring
+    api_key = keyring.get_password("openai", "api-key")
+    if not api_key:
+        print("Error: No API key found in keyring under 'openai/api-key'")
+        print("Please set it using: keyring set openai api-key")
+        sys.exit(1)
+
+    # Set up OpenAI client
+    client = openai.OpenAI(api_key=api_key)
+
+    # Determine filename
+    if filename is None:
+        filename = get_next_filename()
+
+    # Calculate optimal generation size
+    gen_width, gen_height = calculate_optimal_size(width, height)
+
+    # Enhance prompt for aspect ratio and quality
+    enhanced_prompt = enhance_prompt_for_aspect_ratio(prompt, gen_width, gen_height)
+
+    print(f"Generating image with prompt: '{enhanced_prompt}'")
+    print(f"Generation size: {gen_width}x{gen_height}")
+
+    if width is not None and height is not None:
+        print(f"Will resize/crop to: {width}x{height}")
+
+    try:
+        # Generate image using GPT-4o native image generation
+        response = client.images.generate(
+            model="gpt-image-1",  # GPT-4o image generation model
+            prompt=enhanced_prompt,
+            size=f"{gen_width}x{gen_height}",
+            quality="high",
+            output_format="png",  # png, jpeg, or webp
+            n=1,
+        )
+
+        # gpt-image-1 always returns base64 data in b64_json field
+        if hasattr(response.data[0], "b64_json") and response.data[0].b64_json:
+            print("Processing base64 image data...")
+            image_data = base64.b64decode(response.data[0].b64_json)
+            image = Image.open(BytesIO(image_data))
+        else:
+            raise Exception("No base64 image data received in response")
+
+        print(f"Image loaded successfully: {image.size[0]}x{image.size[1]}")
+
+        # Resize and crop if specific dimensions were requested and different from generated
+        if (
+            width is not None
+            and height is not None
+            and (width != gen_width or height != gen_height)
+        ):
+            print(f"Resizing and cropping to {width}x{height}...")
+            image = resize_and_crop_image(image, width, height)
+
+        # Save the image
+        if image.mode == "RGBA":
+            # If image has transparency, save as PNG or convert to RGB for JPEG
+            if filename.lower().endswith(".jpg") or filename.lower().endswith(".jpeg"):
+                # Convert RGBA to RGB for JPEG format
+                rgb_image = Image.new(
+                    "RGB", image.size, (255, 255, 255)
+                )  # White background
+                rgb_image.paste(
+                    image, mask=image.split()[-1]
+                )  # Use alpha channel as mask
+                rgb_image.save(filename, "JPEG", quality=95)
+                print(f"Image saved as: {filename} (converted from RGBA to RGB)")
+            else:
+                # Save as PNG to preserve transparency
+                png_filename = filename.rsplit(".", 1)[0] + ".png"
+                image.save(png_filename, "PNG")
+                print(f"Image saved as: {png_filename} (preserved transparency)")
+                filename = png_filename
+        else:
+            # Regular RGB image
+            if filename.lower().endswith(".png"):
+                image.save(filename, "PNG")
+            else:
+                image.save(filename, "JPEG", quality=95)
+            print(f"Image saved as: {filename}")
+
+        return filename
+
+    except Exception as e:
+        print(f"Error generating image: {e}")
+        sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate images using GPT-4o native image generation",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python image_generator.py "a cat sitting on a table"
+  python image_generator.py "sunset over mountains" --width 1920 --height 1080
+  python image_generator.py "abstract art" --filename my_art.png
+  python image_generator.py "portrait of a robot" -w 800 -H 1200 -f robot.png
+  python image_generator.py "business logo design" --width 512 --height 512
+
+Note: GPT-4o supports specific sizes (1024x1024, 1024x1536, 1536x1024) which are 
+mapped to your desired aspect ratio, then cropped to exact dimensions if specified.
+Images may have transparency and are saved as PNG by default. Use .jpg/.jpeg 
+extension to force conversion to RGB with white background.
+        """,
+    )
+
+    parser.add_argument("prompt", help="The text prompt to generate an image from")
+
+    parser.add_argument(
+        "-f",
+        "--filename",
+        help="Output filename (default: generated_image_{number}.png)",
+    )
+
+    parser.add_argument(
+        "-w",
+        "--width",
+        type=int,
+        help="Target width for the final image (will map to closest supported size)",
+    )
+
+    parser.add_argument(
+        "-H",
+        "--height",
+        type=int,
+        help="Target height for the final image (will map to closest supported size)",
+    )
+
+    args = parser.parse_args()
+
+    # Validate dimensions
+    if (args.width is None) != (args.height is None):
+        print("Error: Both width and height must be specified together, or neither.")
+        sys.exit(1)
+
+    if args.width is not None:
+        if args.width <= 0 or args.height <= 0:
+            print("Error: Width and height must be positive integers.")
+            sys.exit(1)
+
+        if args.width > 2048 or args.height > 2048:
+            print(
+                "Warning: Very large dimensions will be mapped to closest supported size and then cropped."
+            )
+
+    # Generate the image
+    generate_image(
+        prompt=args.prompt, filename=args.filename, width=args.width, height=args.height
+    )
+
+
+if __name__ == "__main__":
+    main()
