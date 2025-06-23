@@ -212,11 +212,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python image_generator.py "a cat sitting on a table"
-  python image_generator.py "sunset over mountains" --width 1920 --height 1080
-  python image_generator.py "abstract art" --filename my_art.png
-  python image_generator.py "portrait of a robot" -w 800 -H 1200 -f robot.png
-  python image_generator.py "business logo design" --width 512 --height 512
+  python image_generator.py a cat sitting on a table
+  python image_generator.py sunset over mountains --width 1920 --height 1080
+  python image_generator.py abstract art --filename my_art.png
+  python image_generator.py portrait of a robot -w 800 --height 1200 -f robot.png
+  python image_generator.py business logo design --width 512 --height 512
 
 Note: GPT-4o supports specific sizes (1024x1024, 1024x1536, 1536x1024) which are 
 mapped to your desired aspect ratio, then cropped to exact dimensions if specified.
@@ -225,7 +225,11 @@ extension to force conversion to RGB with white background.
         """,
     )
 
-    parser.add_argument("prompt", help="The text prompt to generate an image from")
+    parser.add_argument(
+        "prompt",
+        nargs=argparse.REMAINDER,
+        help="The text prompt to generate an image from (consume all remaining arguments)",
+    )
 
     parser.add_argument(
         "-f",
@@ -241,13 +245,20 @@ extension to force conversion to RGB with white background.
     )
 
     parser.add_argument(
-        "-H",
         "--height",
         type=int,
         help="Target height for the final image (will map to closest supported size)",
     )
 
     args = parser.parse_args()
+
+    # Prompt should be joined from remaining arguments
+    prompt = " ".join(args.prompt).strip()
+
+    # Validate prompt
+    if not prompt:
+        print("Error: You must provide a prompt.")
+        sys.exit(1)
 
     # Validate dimensions
     if (args.width is None) != (args.height is None):
@@ -266,7 +277,7 @@ extension to force conversion to RGB with white background.
 
     # Generate the image
     generate_image(
-        prompt=args.prompt, filename=args.filename, width=args.width, height=args.height
+        prompt=prompt, filename=args.filename, width=args.width, height=args.height
     )
 
 
