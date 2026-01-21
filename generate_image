@@ -4,6 +4,7 @@ Image generator using GPT-4o native image generation with command line interface
 """
 
 import argparse
+import fcntl
 import keyring
 import openai
 import requests
@@ -13,6 +14,26 @@ import os
 import re
 import sys
 from io import BytesIO
+
+LOCK_FILE = "/tmp/generate_image.lock"
+
+
+def acquire_lock():
+    """Acquire exclusive lock, waiting if another generation is in progress."""
+    lock_fd = open(LOCK_FILE, 'w')
+
+    # Try non-blocking first to check if we need to wait
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_fd  # Got lock immediately
+    except BlockingIOError:
+        # Another process has the lock - show waiting message
+        print("Another image generation is in progress. Waiting...")
+
+        # Now block until we get the lock
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        print("Lock acquired, starting generation...")
+        return lock_fd
 
 
 def get_next_filename():
@@ -275,10 +296,14 @@ extension to force conversion to RGB with white background.
                 "Warning: Very large dimensions will be mapped to closest supported size and then cropped."
             )
 
-    # Generate the image
-    generate_image(
-        prompt=prompt, filename=args.filename, width=args.width, height=args.height
-    )
+    # Acquire lock before generation
+    lock_fd = acquire_lock()
+    try:
+        generate_image(
+            prompt=prompt, filename=args.filename, width=args.width, height=args.height
+        )
+    finally:
+        lock_fd.close()  # Releases lock
 
 
 if __name__ == "__main__":
