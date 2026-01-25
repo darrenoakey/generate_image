@@ -137,6 +137,23 @@ def resize_and_crop_image(image, target_width, target_height):
 def generate_image(prompt, filename=None, width=None, height=None):
     """Generate an image using GPT-4o native image generation"""
 
+    # Determine filename first so we can check if it exists
+    if filename is None:
+        filename = get_next_filename()
+
+    # Validate file extension
+    valid_extensions = ('.png', '.jpg', '.jpeg')
+    if not filename.lower().endswith(valid_extensions):
+        print(f"Error: Unsupported file extension in '{filename}'")
+        print("Supported extensions: .png, .jpg, .jpeg")
+        sys.exit(1)
+
+    # Error if output file already exists
+    if os.path.exists(filename):
+        print(f"Error: Output file already exists: {filename}")
+        print("Delete the file first or specify a different filename.")
+        sys.exit(1)
+
     # Get API key from keyring
     api_key = keyring.get_password("openai", "api-key")
     if not api_key:
@@ -146,10 +163,6 @@ def generate_image(prompt, filename=None, width=None, height=None):
 
     # Set up OpenAI client
     client = openai.OpenAI(api_key=api_key)
-
-    # Determine filename
-    if filename is None:
-        filename = get_next_filename()
 
     # Calculate optimal generation size
     gen_width, gen_height = calculate_optimal_size(width, height)
@@ -193,32 +206,19 @@ def generate_image(prompt, filename=None, width=None, height=None):
             print(f"Resizing and cropping to {width}x{height}...")
             image = resize_and_crop_image(image, width, height)
 
-        # Save the image
-        if image.mode == "RGBA":
-            # If image has transparency, save as PNG or convert to RGB for JPEG
-            if filename.lower().endswith(".jpg") or filename.lower().endswith(".jpeg"):
-                # Convert RGBA to RGB for JPEG format
-                rgb_image = Image.new(
-                    "RGB", image.size, (255, 255, 255)
-                )  # White background
-                rgb_image.paste(
-                    image, mask=image.split()[-1]
-                )  # Use alpha channel as mask
+        # Save the image to the exact filename specified
+        if filename.lower().endswith(".jpg") or filename.lower().endswith(".jpeg"):
+            # JPEG format - convert RGBA to RGB if needed
+            if image.mode == "RGBA":
+                rgb_image = Image.new("RGB", image.size, (255, 255, 255))
+                rgb_image.paste(image, mask=image.split()[-1])
                 rgb_image.save(filename, "JPEG", quality=95)
-                print(f"Image saved as: {filename} (converted from RGBA to RGB)")
-            else:
-                # Save as PNG to preserve transparency
-                png_filename = filename.rsplit(".", 1)[0] + ".png"
-                image.save(png_filename, "PNG")
-                print(f"Image saved as: {png_filename} (preserved transparency)")
-                filename = png_filename
-        else:
-            # Regular RGB image
-            if filename.lower().endswith(".png"):
-                image.save(filename, "PNG")
             else:
                 image.save(filename, "JPEG", quality=95)
-            print(f"Image saved as: {filename}")
+        else:
+            # PNG format - preserves transparency
+            image.save(filename, "PNG")
+        print(f"Image saved as: {filename}")
 
         return filename
 
