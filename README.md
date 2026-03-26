@@ -72,3 +72,7 @@ python image_generator.py <prompt> [options]
 ## Transparency
 
 Images may have transparency and are saved as PNG by default. Use a `.jpg` or `.jpeg` extension to force conversion to RGB with a white background.
+
+## License
+
+This project is licensed under [CC BY-NC 4.0](https://darren-static.waft.dev) - free to use and modify, but no commercial use without permission.
